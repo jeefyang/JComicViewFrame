@@ -1,5 +1,5 @@
 <template>
-  <div class="container" @wheel="(e) => handleWheel(e)" ref="scrollRef">
+  <div class="container" ref="scrollRef">
     <template v-if="props.list && props.list.length > 0">
       <div
         class="view"
@@ -22,18 +22,28 @@
             </div>
           </slot>
         </div>
-        <template v-for="item in viewList" :key="item.key">
+        <div
+          class="view_child"
+          v-for="item in viewList"
+          :key="item.key"
+          :alt="item.key"
+          :style="{
+            marginBottom: curOP.gap + 'px',
+          }"
+        >
           <div
-            class="loading_container"
+            class="loading"
             v-if="item.type == 'div'"
             :style="{
-              marginBottom: curOP.gap + 'px',
               width: item.width + 'px',
               height: item.height + 'px',
             }"
           >
             <slot name="loading" :item="item">
-              <div class="template">加载中...</div>
+              <div>
+                <div class="template">加载中...</div>
+                <div class="template">{{ item.key }}</div>
+              </div>
             </slot>
           </div>
           <img
@@ -43,12 +53,11 @@
             :src="item.src"
             :alt="item.key"
             :style="{
-              marginBottom: curOP.gap + 'px',
               width: item.width + 'px',
               height: item.height + 'px',
             }"
           />
-        </template>
+        </div>
         <div class="next" :style="{ height: nextH + 'px' }">
           <slot name="next">
             <div class="template end">
@@ -59,6 +68,10 @@
           </slot>
         </div>
       </div>
+      <div class="shadow">
+        <slot name="shadow"></slot>
+      </div>
+      <div class="shadow" @wheel="(e) => handleWheel(e)"></div>
     </template>
     <slot v-else name="empty">
       <div class="template">暂无数据</div>
@@ -99,7 +112,6 @@ type ViewType = {
   originWidth?: number
   originHeight?: number
   index: number
-  delta: -1 | 1
 }
 
 type ScrollingWorkType = {
@@ -136,8 +148,12 @@ const containerW = ref(0)
 const containerH = ref(0)
 /** 隐藏上页高度 */
 const prevH = ref(0)
+/** 隐藏上页个数 */
+const prevCount = ref(0)
 /** 隐藏下页高度 */
 const nextH = ref(0)
+/** 隐藏下页个数 */
+const nextCount = ref(0)
 /** 当前滚动到第几个 */
 const curUpScrollCount = ref(0)
 const curDownScollCount = ref(-1)
@@ -145,8 +161,6 @@ const curDownScollCount = ref(-1)
 let scrollingWorkKeysCount = 0
 /** 当前滚动作业 */
 const scrollingWorkList = ref<ScrollingWorkType[]>([])
-/** 是否在滚动 */
-const isScrolling = computed(() => scrollingWorkList.value.length != 0)
 /** 当前滚动趋势 -1:向上 1:向下 */
 const curDelta = ref(<-1 | 1>1)
 
@@ -178,22 +192,44 @@ watch(
     immediate: true,
   },
 )
+let translateYTimer: number = -1
+let dispatchTranslateY = false
+const translateDeltaTime = 300
+let translateYCache: number = 0
+
+const transLateYTimeFn = () => {
+  if (translateYTimer != -1) {
+    return
+  }
+  dispatchTranslateY = false
+  translateYTimer = setTimeout(() => {
+    updateByTranslateY(translateYCache)
+    clearTimeout(translateYTimer)
+    translateYTimer = -1
+    if (dispatchTranslateY) {
+      transLateYTimeFn()
+    }
+  }, translateDeltaTime)
+}
 
 watch(
   () => translateY.value,
   (v) => {
-    if (multiLoadCache.length > 0) {
-      const c = multiLoadCache[0]
-      const v = viewList.value.find((o) => o.src == c.src)
-      if (v && v.delta != curDelta.value) {
-        multiLoadCache = []
-      }
-    }
-    const start = -v
-    const end = -v + containerH.value
-    // if(curDelta.value==-1 && start)
+    translateYCache = v
+    dispatchTranslateY = true
+    transLateYTimeFn()
   },
 )
+let oldDelta: -1 | 1 = 1
+const updateByTranslateY = (v: number) => {
+  updateView(false, true)
+  updateScrollCount(-v)
+  if (curDelta.value != oldDelta) {
+    removeLastLoadImgCache()
+  }
+  oldDelta = curDelta.value
+  updateImg(false)
+}
 
 const allH = computed(() => {
   return (
@@ -219,158 +255,247 @@ const update = (start?: number) => {
     return
   }
   if (start == undefined) {
-    start = curDownScollCount.value
+    start = curUpScrollCount.value
   }
   start = Math.max(0, Math.min(start, props.list.length))
-  curDownScollCount.value = start
+  curUpScrollCount.value = start
   containerW.value = scrollRef.value.offsetWidth
   containerH.value = scrollRef.value.offsetHeight
+  prevCount.value = start
   prevH.value = start * containerH.value
-  nextH.value = (props.list.length - start) * containerH.value
+  nextCount.value = props.list.length - start
+  nextH.value = nextCount.value * containerH.value
   translateY.value = -prevH.value - curOP.gap
-  loopLoad(
-    start,
-    1,
-    (o) => {
-      viewList.value.push(o)
-      nextH.value -= o.height + curOP.gap
-    },
-    (_o, key) => {
-      const index = viewList.value.findIndex((item) => item.key === key)
-      if (index == -1) {
-        return
-      }
-      viewList.value = [...viewList.value]
-    },
-  )
+  updateView(true)
+  updateScrollCount(-translateY.value)
+  updateImg(true)
 }
 
-/** 循环加载 */
-const loopLoad = (
-  start: number,
-  delta: -1 | 1,
-  pushCB: (o: ViewType, key: string, index: number) => void,
-  loadedCB: (o: ViewType, key: string, index: number) => void,
-) => {
-  const l = delta == -1 ? Math.min(0, start - curOP.preloadPrev) : start
-  const r = delta == -1 ? start : Math.min(start + curOP.preloadNext, props.list.length - 1)
-  if (l > r) {
+/** 更新滚动排序索引 */
+const updateScrollCount = (v: number) => {
+  if (v <= prevH.value) {
+    curUpScrollCount.value = Math.floor(v / containerH.value)
+  } else {
+    let upStartCount = prevCount.value
+    let upStart = prevH.value
+    let isSelct = false
+    for (let i = 0; i < viewList.value.length; i++) {
+      const c = viewList.value[i]
+      upStart += c.height
+      if (upStart >= v) {
+        curUpScrollCount.value = c.index
+        isSelct = true
+        break
+      }
+      upStartCount++
+    }
+    if (!isSelct) {
+      curUpScrollCount.value = Math.ceil((v - upStart) / containerH.value) + upStartCount
+    }
+  }
+  const down = v + containerH.value
+  if (down <= prevH.value) {
+    curDownScollCount.value = Math.floor(down / containerH.value)
     return
   }
-  while (start >= l && start <= r) {
-    const src = props.list[start]
-    const key = getKey(src, start)
-    const index = viewList.value.findIndex((v) => v.key == key)
-    if (index != -1) {
-      start += delta
+  let downStartCount = prevCount.value
+  let downStart = prevH.value
+  for (let i = 0; i < viewList.value.length; i++) {
+    const c = viewList.value[i]
+    downStart += c.height
+    if (downStart >= down) {
+      curDownScollCount.value = c.index
+      return
+    }
+    downStartCount++
+  }
+  curDownScollCount.value = Math.ceil((down - downStart) / containerH.value) + downStartCount
+}
+
+/** 更新可视视图 */
+const updateView = (isReset: boolean = false, isAutoRemove: boolean = false) => {
+  if (isReset) {
+    viewList.value = []
+  }
+  const start = curUpScrollCount.value
+  const l = Math.max(0, start - curOP.preloadPrev)
+  const r = Math.min(props.list.length, start + curOP.preloadNext)
+  if (isAutoRemove) {
+    for (let i = viewList.value.length - 1; i >= 0; i--) {
+      const c = viewList.value[i]
+      if (c.index < l || c.index > r) {
+        if (c.index < start) {
+          prevCount.value++
+          prevH.value += containerH.value
+          translateY.value -= containerH.value - (c.height + curOP.gap)
+          translatingY -= containerH.value - (c.height + curOP.gap)
+        } else {
+          nextCount.value++
+          nextH.value += containerH.value
+        }
+        viewList.value.splice(i, 1)
+      }
+    }
+  }
+  for (let i = l; i < r; i++) {
+    const c = props.list[i]
+    const key = getKey(c, i)
+    if (viewList.value.findIndex((c) => c.key == key) !== -1) {
       continue
     }
-
-    const n: ViewType = {
-      src: src,
-      key: getKey(src, start),
+    const v: ViewType = {
+      key: key,
+      index: i,
+      oldW: containerW.value,
+      oldH: containerH.value - curOP.gap,
       width: containerW.value,
       height: containerH.value - curOP.gap,
-      index: start,
+      src: c,
       type: 'div',
-      delta: 1,
     }
-    loadImg(src).then((r) => {
-      n.oldW = n.width
-      n.oldH = n.height
-      n.originHeight = r!.height
-      n.originWidth = r!.width
-      n.width = containerW.value
-      n.height = (r!.height * containerW.value) / r!.width
-      n.type = 'img'
-      loadedCB(n, n.key, n.index)
-    })
-    pushCB(n, n.key, n.index)
-    start += delta
+    let insertIndex = viewList.value.findIndex((cc) => cc.index > i)
+    if (insertIndex === -1) {
+      insertIndex = viewList.value.length
+    }
+    viewList.value.splice(insertIndex, 0, v)
+    if (i < start) {
+      prevH.value -= containerH.value
+      prevCount.value--
+    }
+    if (i >= start) {
+      nextH.value -= containerH.value
+      nextCount.value--
+    }
   }
 }
 
 /** 图片缓存 */
 const imgMap = new Map<string, { width: number; height: number }>()
 /** 多线加载 */
-let multiLoadCache: { src: string; fn: (width: number, height: number) => void }[] = []
-/** 多线正在加载的缓存 */
-const multiLoadingCache: boolean[] = []
-/** 是否停止多线加载 */
-let isStopMultiLoad = false
-/**  设置多线加载 */
-const setMultiLoad = (o?: (typeof multiLoadCache)[number]) => {
-  if (isStopMultiLoad) {
-    return
-  }
-  if (o) {
-    multiLoadCache.push(o)
-  }
-  if (multiLoadingCache.length >= curOP.multiLoadNum) {
-    return
-  }
-  let f: (typeof multiLoadCache)[number] | undefined = undefined
-  let l = 0
-  let r = multiLoadCache.length - 1
-  let start = curDelta.value == -1 ? curUpScrollCount.value : curDownScollCount.value
-  while (start >= l && start <= r) {
-    const img = new Image()
-    img.remove()
-  }
-  if (!f) {
-    f = multiLoadCache.shift()
-  }
-  if (!f) {
-    return
-  }
+let multiLoadImgCache: {
+  src: string
+  key: string
+  index: number
+  time: number
+  img: HTMLImageElement
+}[] = []
 
-  multiLoadingCache.push(true)
-  const img = new Image()
-  img.src = f.src
-  img.onload = () => {
-    f.fn(img.width, img.height)
-    multiLoadingCache.pop()
-    setMultiLoad()
+/** 删除最后一个图片缓存 */
+const removeLastLoadImgCache = () => {
+  if (multiLoadImgCache.length == 0) {
+    return
   }
+  const filterList = multiLoadImgCache.filter(
+    (item) => item.index < curUpScrollCount.value || item.index > curDownScollCount.value,
+  )
+  if (filterList.length == 0) {
+    return
+  }
+  const start = curDelta.value == -1 ? curUpScrollCount.value : curDownScollCount.value
+  filterList.sort((a, b) => Math.abs(a.index - start) - Math.abs(b.index - start))
+  const o = filterList.pop()!
+  o.img.src = ''
+  o.img.remove()
+  const index = multiLoadImgCache.findIndex((c) => c.index == o.index)
+  multiLoadImgCache.splice(index, 1)
 }
 
-/** 多线加载链接 */
-const multiLoadSrc = async (src: string): Promise<{ width: number; height: number }> => {
-  /** 不多线加载 */
+const viewOnLoad = (v: ViewType, img: HTMLImageElement) => {
+  v.oldW = v.width
+  v.oldH = v.height
+  v.width = containerW.value
+  v.height = (img.height * containerW.value) / img.width
+  v.type = 'img'
+  if (v.index < curUpScrollCount.value) {
+    translateY.value += v.oldH - v.height
+    translatingY += v.oldH - v.height
+  } else if (v.index == curUpScrollCount.value && curDelta.value == -1) {
+    translateY.value += v.oldH - v.height
+    translatingY += v.oldH - v.height
+  }
+  viewList.value = [...viewList.value]
+  updateScrollCount(-translateY.value)
+}
+
+/** 循环加载计时器 */
+let loopLoadImgCount = 0
+/** 循环加载图片 */
+const loopLoadImg = (count: number, start?: number) => {
+  if (count != loopLoadImgCount) {
+    return
+  }
+  if (start == undefined) {
+    start = curUpScrollCount.value
+  }
+
+  let c = viewList.value.find((c) => c.index == start)
+  // 找不到就停止
+  if (!c) {
+    return
+  }
+  // 已经加载完,跳过继续
+  if (c.type != 'div') {
+    start += curDelta.value
+    loopLoadImg(count, start + curDelta.value)
+    return
+  }
+  // 无上限加载
   if (curOP.multiLoadNum == 0) {
-    return new Promise((res, rej) => {
-      const img = new Image()
-      img.src = src
-      img.onload = () => {
-        res({ width: img.width, height: img.height })
-      }
-    })
+    const img = new Image()
+    img.src = c.src
+    img.onload = () => {
+      viewOnLoad(c, img)
+    }
+    return loopLoadImg(count, start + curDelta.value)
   }
-  return new Promise((res, rej) => {
-    setMultiLoad({
-      src: src,
-      fn: (w, h) => {
-        res({ width: w, height: h })
-      },
-    })
+
+  // 多线程加载
+  // 线程超过上限
+  if (multiLoadImgCache.length >= curOP.multiLoadNum) {
+    return
+  }
+  // 正在加载中
+  if (multiLoadImgCache.findIndex((cc) => cc.key == c.key) != -1) {
+    loopLoadImg(count, start + curDelta.value)
+    return
+  }
+  const img = new Image()
+  img.src = c.src
+  img.onload = () => {
+    viewOnLoad(c, img)
+    const index = multiLoadImgCache.findIndex((cc) => cc.key == c.key)
+    if (index != -1) {
+      multiLoadImgCache.splice(index, 1)
+    }
+    loopLoadImg(count, start + curDelta.value)
+  }
+  multiLoadImgCache.push({
+    src: c.src,
+    key: c.key,
+    img: img,
+    time: new Date().getTime(),
+    index: c.index,
   })
+  loopLoadImg(count, start + curDelta.value)
 }
 
-const loadImg = async (src: string): Promise<ReturnType<(typeof imgMap)['get']>> => {
-  if (false && imgMap.has(src)) {
-    return imgMap.get(src)!
+/** 更新图片 */
+const updateImg = (isReset: boolean = false) => {
+  if (isReset) {
+    multiLoadImgCache.forEach((c) => {
+      c.img.src = ''
+      c.img.remove()
+    })
+    multiLoadImgCache = []
   }
-  return new Promise(async (resolve, reject) => {
-    const data = await multiLoadSrc(src)
-    imgMap.set(src, { width: data.width, height: data.height })
-    resolve(imgMap.get(src)!)
-  })
+  loopLoadImgCount++
+  loopLoadImg(loopLoadImgCount)
 }
 
 const handleWheel = (e: WheelEvent) => {
   e.preventDefault()
   const delta = e.deltaY || e.detail
-  curDelta.value = delta > 0 ? -1 : 1
+  curDelta.value = delta > 0 ? 1 : -1
   let curTransY = translateY.value + delta * curOP.flowSpeed * -1
 
   curTransY = Math.min(0, Math.max(curTransY, containerH.value - allH.value))
@@ -413,7 +538,11 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  isStopMultiLoad = true
+  clearTimeout(translateYTimer)
+  multiLoadImgCache.forEach((c) => {
+    c.img.src = ''
+    c.img.remove()
+  })
   scrollingWorkList.value.forEach((c) => {
     cancelAnimationFrame(c.animateID)
   })
@@ -424,6 +553,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  position: relative;
 }
 
 .view {
@@ -461,8 +591,11 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
-.loading_container {
+.view_child {
   background-color: blue;
+}
+
+.loading {
   position: relative;
   flex-shrink: 0;
 }
@@ -498,5 +631,15 @@ onBeforeUnmount(() => {
 .media {
   user-select: none;
   -webkit-user-drag: none;
+  display: block;
+}
+
+.shadow {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  overflow: hidden;
 }
 </style>
