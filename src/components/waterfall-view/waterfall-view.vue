@@ -71,7 +71,16 @@
       <div class="shadow">
         <slot name="shadow"></slot>
       </div>
-      <div class="shadow" @wheel="(e) => handleWheel(e)"></div>
+      <div
+        class="shadow"
+        @wheel="(e) => handleWheel(e)"
+        @mousedown="drag.onMouseDown"
+        @mousemove="drag.onMouseMove"
+        @mouseup="drag.onMouseUp"
+        @touchstart="drag.onTouchStart"
+        @touchmove="drag.onTouchMove"
+        @touchend="drag.onTouchEnd"
+      ></div>
     </template>
     <slot v-else name="empty">
       <div class="template">暂无数据</div>
@@ -80,6 +89,7 @@
 </template>
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { WaterfallDrag } from './waterfall-drag'
 
 type OPType = {
   /** 间隔 */
@@ -119,6 +129,8 @@ type ScrollingWorkType = {
   key: string
   delta: number
 }
+
+const drag = new WaterfallDrag()
 
 const props = withDefaults(
   defineProps<{
