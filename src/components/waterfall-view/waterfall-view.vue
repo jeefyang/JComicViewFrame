@@ -1,5 +1,5 @@
 <template>
-  <div class="container" ref="scrollRef">
+  <div class="container" ref="containerRef">
     <template v-if="props.list && props.list.length > 0">
       <div
         class="view"
@@ -23,7 +23,7 @@
           </slot>
         </div>
         <div
-          class="view_child"
+          class="view_child media"
           v-for="item in viewList"
           :key="item.key"
           :alt="item.key"
@@ -46,10 +46,11 @@
               </div>
             </slot>
           </div>
+
           <img
+            v-else-if="item.type == 'img'"
             class="media"
             style="flex-shrink: 0"
-            v-else-if="item.type == 'img'"
             :src="item.src"
             :alt="item.key"
             :style="{
@@ -57,6 +58,7 @@
               height: item.height + 'px',
             }"
           />
+          <div class="media_over">{{ item.key }}</div>
         </div>
         <div class="next" :style="{ height: nextH + 'px' }">
           <slot name="next">
@@ -72,6 +74,7 @@
         <slot name="shadow"></slot>
       </div>
       <div
+        ref="wheelRef"
         class="shadow"
         @wheel="(e) => handleWheel(e)"
         @mousedown="drag.onMouseDown"
@@ -89,7 +92,7 @@
 </template>
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { WaterfallDrag } from './waterfall-drag'
+import { WaterfallDrag, type ScrollFlowType } from './waterfall-drag'
 
 type OPType = {
   /** 间隔 */
@@ -100,17 +103,12 @@ type OPType = {
   preloadPrev: number
   /** 预加载多少张下一页 */
   preloadNext: number
-  /** 滚动速度系数 */
-  flowSpeed: number
-  /** 滚动平滑 */
-  flowSmooth: boolean
-  /** 滚动平滑系数 */
-  flowSmoothRatio: number
   /** 同时加载上限,0为无上限 */
   multiLoadNum: number
   /** 可视个数,0为无上限 */
   viewCount: number
-}
+} & ScrollFlowType
+
 type ViewType = {
   type: 'div' | 'img'
   key: string
@@ -150,10 +148,10 @@ const emits = defineEmits<{
 
 /** Y轴 */
 const translateY = ref(0)
-/** 正在要滚动到的Y轴 */
-let translatingY = 0
+/** 容器的元素 */
+const containerRef = ref<HTMLDivElement>()
 /** 滚动的元素 */
-const scrollRef = ref<HTMLDivElement>()
+const wheelRef = ref<HTMLDivElement>()
 /** 容器的宽度 */
 const containerW = ref(0)
 /** 容器的高度 */
@@ -166,15 +164,10 @@ const prevCount = ref(0)
 const nextH = ref(0)
 /** 隐藏下页个数 */
 const nextCount = ref(0)
-/** 当前滚动到第几个 */
+/** 当前滚动到第几个(以视图上为准) */
 const curUpScrollCount = ref(0)
+/** 当前滚动到第几个(以视图下为准) */
 const curDownScollCount = ref(-1)
-/** 滚动作业keys 计数器 */
-let scrollingWorkKeysCount = 0
-/** 当前滚动作业 */
-const scrollingWorkList = ref<ScrollingWorkType[]>([])
-/** 当前滚动趋势 -1:向上 1:向下 */
-const curDelta = ref(<-1 | 1>1)
 
 /** 视图列表 */
 const viewList = ref(<ViewType[]>[])
@@ -199,6 +192,12 @@ watch(
     const op: OPType = JSON.parse(JSON.stringify(baseOP))
     Object.assign(op, v)
     Object.assign(curOP, op)
+    Object.keys(curOP).forEach((k) => {
+      if (drag.hasOwnProperty(k)) {
+        // @ts-ignore
+        drag[k] = curOP[k]
+      }
+    })
   },
   {
     immediate: true,
@@ -236,10 +235,12 @@ let oldDelta: -1 | 1 = 1
 const updateByTranslateY = (v: number) => {
   updateView(false, true)
   updateScrollCount(-v)
-  if (curDelta.value != oldDelta) {
-    removeLastLoadImgCache()
+  if (drag.curDeltaY != oldDelta) {
+    AutoremoveLoadImgCache(curUpScrollCount.value, curDownScollCount.value)
+  } else {
+    AutoremoveLoadImgCache(curUpScrollCount.value, curUpScrollCount.value)
   }
-  oldDelta = curDelta.value
+  oldDelta = drag.curDeltaY
   updateImg(false)
 }
 
@@ -262,7 +263,7 @@ const getKey = (src: string, index: number) => {
 
 /** 更新 */
 const update = (start?: number) => {
-  if (!scrollRef.value) {
+  if (!containerRef.value || !wheelRef.value) {
     console.warn('无视图')
     return
   }
@@ -271,8 +272,8 @@ const update = (start?: number) => {
   }
   start = Math.max(0, Math.min(start, props.list.length))
   curUpScrollCount.value = start
-  containerW.value = scrollRef.value.offsetWidth
-  containerH.value = scrollRef.value.offsetHeight
+  containerW.value = containerRef.value.offsetWidth
+  containerH.value = containerRef.value.offsetHeight
   prevCount.value = start
   prevH.value = start * containerH.value
   nextCount.value = props.list.length - start
@@ -330,26 +331,29 @@ const updateView = (isReset: boolean = false, isAutoRemove: boolean = false) => 
     viewList.value = []
   }
   const start = curUpScrollCount.value
-  const l = Math.max(0, start - curOP.preloadPrev)
-  const r = Math.min(props.list.length, start + curOP.preloadNext)
+  let l = Math.max(0, start - curOP.preloadPrev)
+  let r = Math.min(props.list.length - 1, start + curOP.preloadNext)
+  let count = r - l
+  if (count + 1 < curOP.preloadPrev + curOP.preloadNext + 1) {
+    if (l == 0) {
+      r = Math.min(props.list.length - 1, curOP.preloadPrev + curOP.preloadNext + 1)
+    } else if (r == props.list.length - 1) {
+      l = Math.max(0, props.list.length - 1 - curOP.preloadPrev - curOP.preloadNext)
+    }
+  }
   if (isAutoRemove) {
     for (let i = viewList.value.length - 1; i >= 0; i--) {
       const c = viewList.value[i]
       if (c.index < l || c.index > r) {
         if (c.index < start) {
-          prevCount.value++
-          prevH.value += containerH.value
-          translateY.value -= containerH.value - (c.height + curOP.gap)
-          translatingY -= containerH.value - (c.height + curOP.gap)
+          addTrans(0, c.height + curOP.gap - containerH.value)
         } else {
-          nextCount.value++
-          nextH.value += containerH.value
         }
         viewList.value.splice(i, 1)
       }
     }
   }
-  for (let i = l; i < r; i++) {
+  for (let i = l; i < r + 1; i++) {
     const c = props.list[i]
     const key = getKey(c, i)
     if (viewList.value.findIndex((c) => c.key == key) !== -1) {
@@ -370,15 +374,15 @@ const updateView = (isReset: boolean = false, isAutoRemove: boolean = false) => 
       insertIndex = viewList.value.length
     }
     viewList.value.splice(insertIndex, 0, v)
-    if (i < start) {
-      prevH.value -= containerH.value
-      prevCount.value--
-    }
-    if (i >= start) {
-      nextH.value -= containerH.value
-      nextCount.value--
-    }
+    updatePrevNextFn()
   }
+}
+
+const updatePrevNextFn = () => {
+  prevCount.value = viewList.value[0].index
+  prevH.value = prevCount.value * containerH.value
+  nextCount.value = props.list.length - viewList.value[viewList.value.length - 1].index - 1
+  nextH.value = nextCount.value * containerH.value
 }
 
 /** 图片缓存 */
@@ -392,24 +396,29 @@ let multiLoadImgCache: {
   img: HTMLImageElement
 }[] = []
 
-/** 删除最后一个图片缓存 */
-const removeLastLoadImgCache = () => {
-  if (multiLoadImgCache.length == 0) {
+/** 动态删除图片缓存,留出空位加载 */
+const AutoremoveLoadImgCache = (l: number, r: number) => {
+  if (curOP.multiLoadNum == 0) {
     return
   }
-  const filterList = multiLoadImgCache.filter(
-    (item) => item.index < curUpScrollCount.value || item.index > curDownScollCount.value,
-  )
+  // 负载小就跳过
+  if (multiLoadImgCache.length <= curOP.multiLoadNum - (l - r + 1)) {
+    return
+  }
+  const filterList = multiLoadImgCache.filter((item) => item.index < l || item.index > r)
   if (filterList.length == 0) {
     return
   }
-  const start = curDelta.value == -1 ? curUpScrollCount.value : curDownScollCount.value
-  filterList.sort((a, b) => Math.abs(a.index - start) - Math.abs(b.index - start))
-  const o = filterList.pop()!
-  o.img.src = ''
-  o.img.remove()
-  const index = multiLoadImgCache.findIndex((c) => c.index == o.index)
-  multiLoadImgCache.splice(index, 1)
+  const count = l - r + 1 - (multiLoadImgCache.length - filterList.length)
+  const center = (l + r) / 2
+  filterList.sort((a, b) => Math.abs(a.index - center) - Math.abs(b.index - center))
+  for (let i = 0; i < count; i++) {
+    const o = filterList.pop()!
+    o.img.src = ''
+    o.img.remove()
+    const index = multiLoadImgCache.findIndex((c) => c.index == o.index)
+    multiLoadImgCache.splice(index, 1)
+  }
 }
 
 const viewOnLoad = (v: ViewType, img: HTMLImageElement) => {
@@ -418,26 +427,27 @@ const viewOnLoad = (v: ViewType, img: HTMLImageElement) => {
   v.width = containerW.value
   v.height = (img.height * containerW.value) / img.width
   v.type = 'img'
+  updateScrollCount(-translateY.value)
   if (v.index < curUpScrollCount.value) {
-    translateY.value += v.oldH - v.height
-    translatingY += v.oldH - v.height
-  } else if (v.index == curUpScrollCount.value && curDelta.value == -1) {
-    translateY.value += v.oldH - v.height
-    translatingY += v.oldH - v.height
+    addTrans(0, v.oldH - v.height)
+  } else if (v.index == curUpScrollCount.value && drag.curDeltaY == -1) {
+    addTrans(0, v.oldH - v.height)
   }
   viewList.value = [...viewList.value]
-  updateScrollCount(-translateY.value)
 }
 
 /** 循环加载计时器 */
 let loopLoadImgCount = 0
 /** 循环加载图片 */
-const loopLoadImg = (count: number, start?: number) => {
+const loopLoadImg = (count: number, start?: number, loopList?: number[]) => {
   if (count != loopLoadImgCount) {
     return
   }
   if (start == undefined) {
     start = curUpScrollCount.value
+  }
+  if (loopList == undefined) {
+    loopList = [drag.curDeltaY, -drag.curDeltaY]
   }
 
   let c = viewList.value.find((c) => c.index == start)
@@ -446,9 +456,10 @@ const loopLoadImg = (count: number, start?: number) => {
     return
   }
   // 已经加载完,跳过继续
-  if (c.type != 'div') {
-    start += curDelta.value
-    loopLoadImg(count, start + curDelta.value)
+  else if (c.type != 'div') {
+    loopList.forEach((n) => {
+      loopLoadImg(count, start + n, [n])
+    })
     return
   }
   // 无上限加载
@@ -458,7 +469,10 @@ const loopLoadImg = (count: number, start?: number) => {
     img.onload = () => {
       viewOnLoad(c, img)
     }
-    return loopLoadImg(count, start + curDelta.value)
+    loopList.forEach((n) => {
+      loopLoadImg(count, start + n, [n])
+    })
+    return
   }
 
   // 多线程加载
@@ -468,7 +482,9 @@ const loopLoadImg = (count: number, start?: number) => {
   }
   // 正在加载中
   if (multiLoadImgCache.findIndex((cc) => cc.key == c.key) != -1) {
-    loopLoadImg(count, start + curDelta.value)
+    loopList.forEach((n) => {
+      loopLoadImg(count, start + n, [n])
+    })
     return
   }
   const img = new Image()
@@ -479,7 +495,9 @@ const loopLoadImg = (count: number, start?: number) => {
     if (index != -1) {
       multiLoadImgCache.splice(index, 1)
     }
-    loopLoadImg(count, start + curDelta.value)
+    loopList.forEach((n) => {
+      loopLoadImg(count, start + n, [n])
+    })
   }
   multiLoadImgCache.push({
     src: c.src,
@@ -488,7 +506,9 @@ const loopLoadImg = (count: number, start?: number) => {
     time: new Date().getTime(),
     index: c.index,
   })
-  loopLoadImg(count, start + curDelta.value)
+  loopList.forEach((n) => {
+    loopLoadImg(count, start + n, [n])
+  })
 }
 
 /** 更新图片 */
@@ -505,36 +525,16 @@ const updateImg = (isReset: boolean = false) => {
 }
 
 const handleWheel = (e: WheelEvent) => {
-  e.preventDefault()
   const delta = e.deltaY || e.detail
-  curDelta.value = delta > 0 ? 1 : -1
-  let curTransY = translateY.value + delta * curOP.flowSpeed * -1
+  drag.curDeltaY = delta > 0 ? 1 : -1
+  drag.onWheel(e)
+}
 
-  curTransY = Math.min(0, Math.max(curTransY, containerH.value - allH.value))
-  if (!curOP.flowSmooth) {
-    translateY.value = curTransY
-    return
-  }
-  translatingY = curTransY
-  const o: ScrollingWorkType = {
-    key: (scrollingWorkKeysCount++).toString(),
-    animateID: -1,
-    delta: delta,
-  }
-  const animate = () => {
-    const diff = translatingY - translateY.value
-    if (Math.abs(diff) > 0.5) {
-      translateY.value = translateY.value + diff * curOP.flowSmoothRatio
-      o.animateID = requestAnimationFrame(animate)
-    } else {
-      let index = scrollingWorkList.value.findIndex((c) => c.key == o.key)
-      if (index >= 0) {
-        scrollingWorkList.value.splice(index, 1)
-      }
-    }
-  }
-  scrollingWorkList.value.push(o)
-  animate()
+const addTrans = (x: number, y: number) => {
+  const newY = Math.min(0, Math.max(containerH.value - allH.value, translateY.value + y))
+  const delta = newY - translateY.value
+  translateY.value += delta
+  drag.addTrans(x, delta)
 }
 
 defineExpose({
@@ -546,6 +546,11 @@ defineExpose({
 
 onMounted(async () => {
   await nextTick()
+  drag.curTranslateY = () => translateY.value
+  drag.minTranslateY = () => containerH.value - allH.value
+  drag.addDargEvent((o) => {
+    translateY.value += o.y
+  })
   emits('init')
 })
 
@@ -555,9 +560,7 @@ onBeforeUnmount(() => {
     c.img.src = ''
     c.img.remove()
   })
-  scrollingWorkList.value.forEach((c) => {
-    cancelAnimationFrame(c.animateID)
-  })
+  drag.unMounted()
 })
 </script>
 <style lang="css" scoped>
@@ -644,6 +647,16 @@ onBeforeUnmount(() => {
   user-select: none;
   -webkit-user-drag: none;
   display: block;
+  position: relative;
+}
+
+.media_over {
+  position: absolute;
+
+  top: 0;
+  left: 0;
+  color: blueviolet;
+  background-color: azure;
 }
 
 .shadow {
