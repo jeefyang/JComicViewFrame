@@ -64,7 +64,7 @@ export class WaterfallDrag implements ScrollFlowType {
     flowSmoothRatio: number = 0.1;
 
     /** 摩擦系数 */
-    friction = 0.9;
+    friction = 0.8;
     /** 放大系数 */
     speedZoom = 100;
     /** 惯性滚动的帧间隔 */
@@ -225,11 +225,9 @@ export class WaterfallDrag implements ScrollFlowType {
         this.handleEnd();
     }
 
-    onWheel(e: WheelEvent) {
-        e.preventDefault();
-        const delta = e.deltaY || e.detail;
-        this.curDeltaY = delta > 0 ? 1 : -1;
-        let curTransY = this.curTranslateY() + delta * this.flowSpeed * -1;
+    scrollView(x: number, y: number) {
+        this.curDeltaY = y > 0 ? 1 : -1;
+        let curTransY = this.curTranslateY() + y * this.flowSpeed * -1;
         if (this.minTranslateY) {
             curTransY = Math.min(0, Math.max(curTransY, this.minTranslateY()));
 
@@ -259,6 +257,13 @@ export class WaterfallDrag implements ScrollFlowType {
         };
         this.scrollingWorkList.push(o);
         animate();
+
+    }
+
+    onWheel(e: WheelEvent) {
+        e.preventDefault();
+        const delta = e.deltaY || e.detail;
+        this.scrollView(0, delta);
     }
 
     addDargEvent(fn: typeof this['eventList'][number]['fn']) {

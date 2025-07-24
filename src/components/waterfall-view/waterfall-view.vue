@@ -23,7 +23,7 @@
           </slot>
         </div>
         <div
-          class="view_child media"
+          class="view_child media no_select"
           v-for="item in viewList"
           :key="item.key"
           :alt="item.key"
@@ -49,7 +49,7 @@
 
           <img
             v-else-if="item.type == 'img'"
-            class="media"
+            class="media no_select"
             style="flex-shrink: 0"
             :src="item.src"
             :alt="item.key"
@@ -75,7 +75,7 @@
       </div>
       <div
         ref="wheelRef"
-        class="shadow"
+        class="shadow no_select"
         @wheel="(e) => handleWheel(e)"
         @mousedown="drag.onMouseDown"
         @mousemove="drag.onMouseMove"
@@ -83,7 +83,10 @@
         @touchstart="drag.onTouchStart"
         @touchmove="drag.onTouchMove"
         @touchend="drag.onTouchEnd"
-      ></div>
+        :style="{ opacity: curOP.clickOpacity }"
+      >
+        <view-click :ref="(el) => updateViewClick(<any>el)"></view-click>
+      </div>
     </template>
     <slot v-else name="empty">
       <div class="template">暂无数据</div>
@@ -93,6 +96,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { WaterfallDrag, type ScrollFlowType } from './waterfall-drag'
+import viewClick from '../view-click.vue'
 
 type OPType = {
   /** 间隔 */
@@ -107,6 +111,8 @@ type OPType = {
   multiLoadNum: number
   /** 可视个数,0为无上限 */
   viewCount: number
+  /** 点击页面的透明度 */
+  clickOpacity: number
 } & ScrollFlowType
 
 type ViewType = {
@@ -146,12 +152,14 @@ const emits = defineEmits<{
   (e: 'init'): void
 }>()
 
-/** Y轴 */
-const translateY = ref(0)
 /** 容器的元素 */
 const containerRef = ref<HTMLDivElement>()
 /** 滚动的元素 */
 const wheelRef = ref<HTMLDivElement>()
+/** 点击用的元素 */
+const clickRef = ref<InstanceType<typeof viewClick> | null>(null)
+/** Y轴 */
+const translateY = ref(0)
 /** 容器的宽度 */
 const containerW = ref(0)
 /** 容器的高度 */
@@ -182,6 +190,7 @@ const baseOP: OPType = {
   flowSmoothRatio: 0.1,
   multiLoadNum: 3,
   viewCount: 10,
+  clickOpacity: 0,
 }
 
 const curOP = reactive(<OPType>{})
@@ -261,6 +270,33 @@ const getKey = (src: string, index: number) => {
   return `${src}_${index}`
 }
 
+const updateViewClick = (el: InstanceType<typeof viewClick>) => {
+  el.addEvent('alldblclick', 'dblclick', undefined, (x, y) => {
+    const curY = -translateY.value + y
+    let index = -1
+    if (curY <= prevH.value) {
+      index = Math.floor(curY / containerH.value)
+    }
+    let start = prevH.value
+    for (let i = 0; i < viewList.value.length; i++) {
+      start += viewList.value[i].height + curOP.gap
+      if (start >= curY) {
+        index = viewList.value[i].index
+        break
+      }
+    }
+    if (index == -1) {
+      index =
+        prevCount.value + viewList.value.length + Math.floor((curY - start) / containerH.value)
+    }
+
+    if (index >= props.list.length) {
+      index = -1
+    }
+    console.log(index, y, curY, prevH.value)
+  })
+}
+
 /** 更新 */
 const update = (start?: number) => {
   if (!containerRef.value || !wheelRef.value) {
@@ -270,7 +306,7 @@ const update = (start?: number) => {
   if (start == undefined) {
     start = curUpScrollCount.value
   }
-  start = Math.max(0, Math.min(start, props.list.length))
+  start = Math.max(0, Math.min(start, props.list.length - 1))
   curUpScrollCount.value = start
   containerW.value = containerRef.value.offsetWidth
   containerH.value = containerRef.value.offsetHeight
@@ -432,6 +468,9 @@ const viewOnLoad = (v: ViewType, img: HTMLImageElement) => {
     addTrans(0, v.oldH - v.height)
   } else if (v.index == curUpScrollCount.value && drag.curDeltaY == -1) {
     addTrans(0, v.oldH - v.height)
+  }
+  if (-translateY.value > allH.value - containerH.value) {
+    addTrans(0, allH.value - containerH.value + translateY.value)
   }
   viewList.value = [...viewList.value]
 }
@@ -643,9 +682,12 @@ onBeforeUnmount(() => {
   will-change: bottom;
 }
 
-.media {
+.no_select {
   user-select: none;
   -webkit-user-drag: none;
+}
+
+.media {
   display: block;
   position: relative;
 }
